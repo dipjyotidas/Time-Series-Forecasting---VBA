@@ -1,0 +1,521 @@
+Sub TimeSeries_HoltWinters()
+    'Turn off screen updating
+        Application.DisplayAlerts = False
+        Application.ScreenUpdating = False
+   
+    'Enable dictionary use - search for solver reference
+        On Error Resume Next
+            ActiveWorkbook.VBProject.References.AddFromFile ("C:\Windows\system32\scrrun.dll")
+        'Program
+            On Error Resume Next
+               ActiveWorkbook.VBProject.References.AddFromFile ("C:\Program Files\Microsoft Office\Office14\Library\SOLVER")
+            On Error Resume Next
+               ActiveWorkbook.VBProject.References.AddFromFile ("C:\Program Files\Microsoft Office\Office14\Library\SOLVER\Solver32.dll")
+            On Error Resume Next
+               ActiveWorkbook.VBProject.References.AddFromFile ("C:\Program Files\Microsoft Office\Office14\Library\SOLVER\Solver.xlam")
+        'Program x86
+            On Error Resume Next
+               ActiveWorkbook.VBProject.References.AddFromFile ("C:\Program Files (x86)\Microsoft Office\Office14\Library\SOLVER")
+            On Error Resume Next
+               ActiveWorkbook.VBProject.References.AddFromFile ("C:\Program Files (x86)\Microsoft Office\Office14\Library\SOLVER\Solver32.dll")
+            On Error Resume Next
+               ActiveWorkbook.VBProject.References.AddFromFile ("C:\Program Files (x86)\Microsoft Office\Office14\Library\SOLVER\Solver.xlam")
+        'E: for instances of machines with SSD and install on alternate drive
+            On Error Resume Next
+                ActiveWorkbook.VBProject.References.AddFromFile ("E:\Microsoft\MicrosoftOffice\Office14\Library\SOLVER")
+            On Error Resume Next
+                ActiveWorkbook.VBProject.References.AddFromFile ("E:\Microsoft\MicrosoftOffice\Office14\Library\SOLVER\Solver32.dll")
+            On Error Resume Next
+                ActiveWorkbook.VBProject.References.AddFromFile ("E:\Microsoft\MicrosoftOffice\Office14\Library\SOLVER\Solver.xlam")
+
+    'Dim Wb/Ws names
+        Dim Wb As Workbook
+            Set Wb = ActiveWorkbook
+            
+        Dim Sn, Dn, Tn, Fn, FCn, FPn, FVn As String
+            Sn = "SQLData"
+            Dn = "Dictionary"
+            Tn = "Transform"
+            Fn = "Forecast"
+            FCn = "ForecastChart"
+            FPn = "ForecastPivot"
+            FVn = "ForecastVisual"
+            
+        Dim S, D, T, F, FV As Worksheet
+            Set S = Wb.Sheets(Sn)
+            Set D = Wb.Sheets(Dn)
+            Set T = Wb.Sheets(Tn)
+            Set F = Wb.Sheets(Fn)
+            Set FV = Wb.Sheets(FVn)
+            
+    'Msg box - store number of future periods to forecast
+        Dim RptdPer As Double
+        Dim ForecastPeriods As Double
+        RptdPer = WorksheetFunction.Max(Sheets(Sn).Range("E:E"))
+        
+        If RptdPer < 24 Then MsgBox "This instance of time series forecasting requires a minimum of 24 established time periods to establish seasonal trending and initial values.", vbOKOnly, "Forecast | Initial Time Period Shortage"
+        If RptdPer < 24 Then GoTo Quit:
+        
+        ForecastPeriods = InputBox("Please enter the number of future time periods after the initial " & RptdPer & " time periods found in the raw data to forecast:", "Forecast | Time Periods To Forecast", 24, vbOK)
+'        If ForecastPeriods = 0 Then GoTo Quit:
+
+        'Dictionary worksheet
+          Sheets.Add.Name = "Dictionary"
+            D.Select
+            Cells.Select
+                With Selection.Font
+                    .Name = "Calibri"
+                    .Size = 10
+                End With
+            Range("A1").Select
+            
+        'Create dictionary
+            'Group Id
+                Dim GrpId As Scripting.Dictionary
+                Set GrpId = New Scripting.Dictionary
+                Dim Id As Range
+                    
+                'Get unique list - copy data, remove dups, sort alpha
+                    Sheets(Sn).Select
+                    Columns("A:B").Select
+                    Selection.Copy
+        
+                    Sheets(Dn).Select
+                    ActiveSheet.Paste
+                    Rows("1:1").Select
+                    Application.CutCopyMode = False
+                    Selection.Delete Shift:=xlUp
+                    ActiveSheet.Range("$A$1", ActiveCell.SpecialCells(xlLastCell)).RemoveDuplicates Columns:=1, Header:=xlNo
+                    Range("$A$1", ActiveCell.SpecialCells(xlLastCell)).Select
+                    
+                'Get max rows to search for dictionary items
+                    Range("$A$1", ActiveCell.SpecialCells(xlLastCell)).Select
+                    DictRows = Selection.Rows.Count
+                    Range("A1:A" & DictRows).Select
+                    
+                    For Each Id In Selection
+                        If Len(Id) > 0 Then GrpId(Id) = GrpId(Id) + 1 ' using len > 0 skips blank cell values.
+                    Next Id
+    
+    'Continue? Display unique Id count captured by dictionary
+        Application.DisplayAlerts = True
+        TotalPeriods = WorksheetFunction.Sum(RptdPer, ForecastPeriods)
+        Select Case MsgBox("For each Grouping_Id:" & vbNewLine & vbNewLine & _
+            "       " & ForecastPeriods & " time periods to forecast." & vbNewLine & _
+            "       " & RptdPer & " initial time periods." & vbNewLine & _
+            "       " & TotalPeriods & " total time periods to include in final dataset." & vbNewLine & _
+            "       " & GrpId.Count & " unique Group_Id(s)." & vbNewLine & _
+            "       " & (GrpId.Count * TotalPeriods) & " data rows will be returned." & vbNewLine & vbNewLine & _
+            "OK to proceed to processing forecast material?", vbYesNo, "Forecast | Information To Process")
+        Case vbNo
+            GoTo Quit:
+        Case vbYes
+            GoTo Forecast:
+        End Select
+        
+Forecast:
+        Application.DisplayAlerts = False
+    
+    'DeleteForecast if exists
+        On Error Resume Next
+        Sheets(Fn).Delete
+        On Error Resume Next
+        Sheets(FVn).Delete
+                Application.DisplayAlerts = True
+    'Create worksheets to process data
+        'Forecast worksheet
+          Sheets.Add.Name = "Forecast"
+            F.Select
+            Cells.Select
+                With Selection.Font
+                    .Name = "Calibri"
+                    .Size = 10
+                End With
+            'Create column headers
+                Rows("1:1").Select
+                With Selection.Font
+                    .Bold = True
+                End With
+                    Range("A1") = "Grouping_Id"
+                    Range("B1") = "Grouping_Name"
+                    Range("C1") = "YearCode"
+                    Range("D1") = "MonthCode"
+                    Range("E1") = "Period"
+                    Range("F1") = "Metric"
+                    Range("G1") = "Level"
+                    Range("H1") = "Trend"
+                    Range("I1") = "Seasonal"
+                    Range("J1") = "Forecast"
+                    Range("K1") = "Error"
+                    Range("L1") = "AbsErr"
+                    Range("M1") = "%Err"
+                    Range("N1") = "SquareErr"
+                    Range("O1") = "UStat"
+                    Range("P1") = "Alpha,a"
+                    Range("Q1") = "Beta,b"
+                    Range("R1") = "Delta,d"
+                    Range("S1") = "ME"
+                    Range("T1") = "MAE"
+                    Range("U1") = "MAPE"
+                    Range("V1") = "MSE"
+                    Range("W1") = "UStat"
+                    
+            Range("A1").Select
+                    
+'Begin data forecasting/trasformation
+                'Apply filter to data for looping
+                    Sheets(Sn).Select
+                    Rows("1:1").Select
+                    Selection.AutoFilter
+                
+                'Dim Filter range for looping
+                    Range("A1").Select
+                    Dim FilterRange As Range
+                    Set FilterRange = Range("$A$1", ActiveCell.SpecialCells(xlLastCell))
+                
+                'Find last cell in range to sort in id, period order
+                    FilterRange.Select
+                    DataRows = Selection.Rows.Count
+                    
+                    FilterRange.Sort.SortFields.Clear
+                    FilterRange.Sort.SortFields.Add Key:=Range("A2:A" & DataRows), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+                    FilterRange.Sort.SortFields.Add Key:=Range("B2:B" & DataRows), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+                    FilterRange.Sort.SortFields.Add Key:=Range("E2:E" & DataRows), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+                    With S.Sort
+                        .SetRange Range("A1:F" & DataRows)
+                        .Header = xlYes
+                        .MatchCase = False
+                        .Orientation = xlTopToBottom
+                        .SortMethod = xlPinYin
+                        .Apply
+                    End With
+
+'Loop data calculations
+For Each Id In GrpId
+        'Create Transform worksheet every time
+            Sheets.Add.Name = "Transform"
+              T.Select
+              Cells.Select
+                  With Selection.Font
+                      .Name = "Calibri"
+                      .Size = 10
+                  End With
+            'Create column headers
+                Rows("1:1").Select
+                With Selection.Font
+                    .Bold = True
+                End With
+                    Range("A1") = "Grouping_Id"
+                    Range("B1") = "Grouping_Name"
+                    Range("C1") = "YearCode"
+                    Range("D1") = "MonthCode"
+                    Range("E1") = "Period"
+                    Range("F1") = "Metric"
+                    Range("G1") = "Level"
+                    Range("H1") = "Trend"
+                    Range("I1") = "Seasonal"
+                    Range("J1") = "Forecast"
+                    Range("K1") = "Error"
+                    Range("L1") = "AbsErr"
+                    Range("M1") = "%Err"
+                    Range("N1") = "SquareErr"
+                    Range("O1") = "UStat"
+            Range("A1").Select
+
+        'Select unique items using filter and dictionary GrpId from "SQLData" to "Transform" for processing
+            FilterRange.AutoFilter Field:=1, Criteria1:=Id
+        
+        'Copy / paste filtered data to "Transform" to process
+            FilterRange.SpecialCells(xlCellTypeVisible).Copy Sheets(Tn).Range("A1")
+            
+        'Add time periods to forecast
+            Sheets(Tn).Select
+            Range("$A$1", ActiveCell.SpecialCells(xlLastCell)).Select
+            TLast = Selection.Rows.Count
+
+                P = 1 'start with time forecast period = 1
+                    Do
+                        'Grouping_Id and Name
+                            Range("A" & (TLast + P)).FormulaR1C1 = "=(R[-1]C)"
+                            Range("B" & (TLast + P)).FormulaR1C1 = "=(R[-1]C)"
+                        'Period
+                            Range("E" & (TLast + P)).FormulaR1C1 = "=(R[-1]C+1)"
+                        'MonthCode
+                            Range("D" & (TLast + P)).FormulaR1C1 = "=IF(R[-1]C=12,1,R[-1]C+1)"
+                        'YearCode
+                            Range("C" & (TLast + P)).FormulaR1C1 = "=IF(RC[1]=1,R[-1]C+1,R[-1]C)"
+                    P = P + 1
+                    Loop Until P = ForecastPeriods + 2 'Loop until periods to add exceeds the requested number of periods to forecast
+
+        'Transform Data
+            'Constants
+                Range("Q1") = "Constants"
+                Range("Q2") = "Alpha,a"
+                    Range("R2") = 0.5
+                Range("Q3") = "Beta,b"
+                    Range("R3") = 0.5
+                Range("Q4") = "Delta,d"
+                    Range("R4") = 0.5
+                
+            'Changing values for optimizaiton
+                Range("T1") = "ValuesToOptimize"
+                Range("T2") = "ME" 'average "error"
+                    Range("U2").FormulaR1C1 = "=AVERAGE(R[-1]C[-10]:R[" & TLast - 2 & "]C[-10])"
+                Range("T3") = "MAE" 'average "ABS error"
+                    Range("U3").FormulaR1C1 = "=AVERAGE(R[-2]C[-9]:R[" & TLast - 3 & "]C[-9])"
+                Range("T4") = "MAPE" 'average "%error"
+                    Range("U4").FormulaR1C1 = "=AVERAGE(R[-3]C[-8]:R[" & TLast - 4 & "]C[-8])"
+                Range("T5") = "MSE" 'average "SQerror"
+                    Range("U5").FormulaR1C1 = "=AVERAGE(R[-4]C[-7]:R[" & TLast - 5 & "]C[-7])"
+                Range("T6") = "UStat" 'sqrt( sum(SQerror) / sum(Ustat) )
+                    Range("U6").FormulaR1C1 = "=SQRT(SUM(R[-5]C[-7]:R[" & TLast - 6 & "]C[-7])/SUM(R[-5]C[-6]:R[" & TLast - 6 & "]C[-6]))"
+                    
+            'Set intial values
+                Range("W1") = "InitialValues"
+                Range("W2") = "Initial Level Value"
+                    Range("X2").FormulaR1C1 = "=AVERAGE(RC[-18]:R[11]C[-18])" 'average first 12 periods of metric
+                    Range("G13").FormulaR1C1 = "=R[-11]C[17]"
+                Range("W3") = "Initial Trend Value"
+                    Range("X3").FormulaR1C1 = "=(((R[11]C[-18]-R[-1]C[-18])/12)+((R[12]C[-18]-RC[-18])/12)+((R[13]C[-18]-R[1]C[-18])/12)+((R[14]C[-18]-R[2]C[-18])/12)+((R[15]C[-18]-R[3]C[-18])/12)+((R[16]C[-18]-R[4]C[-18])/12)+((R[17]C[-18]-R[5]C[-18])/12)+((R[18]C[-18]-R[6]C[-18])/12)+((R[19]C[-18]-R[7]C[-18])/12)+((R[20]C[-18]-R[8]C[-18])/12)+((R[21]C[-18]-R[9]C[-18])/12)+((R[22]C[-18]-R[10]C[-18])/12))*(1/12)" '24 month YOY - (((period13-period1)/12) + ((period14-period2)/12)....)*(1/12)
+                    Range("H13").FormulaR1C1 = "=R[-10]C[16]"
+                
+                'Set fist 12 period seasonal values
+                    Range("I2").FormulaR1C1 = "=RC[-3]/R13C7"
+                    Range("I2").Copy Sheets(Tn).Range("I2:I13")
+                    
+                'Set formulas
+                    Range("G14").FormulaR1C1 = "=R2C18*(RC[-1]/R[-12]C[2])+(1-R2C18)*(R[-1]C+R[-1]C[1])"
+                    Range("H14").FormulaR1C1 = "=R3C18*(RC[-1]-R[-1]C[-1])+(1-R3C18)*R[-1]C"
+                    Range("I14").FormulaR1C1 = "=R4C18*(RC[-3]/RC[-2])+(1-R4C18)*R[-12]C"
+                    Range("J14").FormulaR1C1 = "=(R[-1]C[-3]+(1*R[-1]C[-2]))*R[-12]C[-1]"
+                    Range("K14").FormulaR1C1 = "=RC[-5]-RC[-1]"
+                    Range("L14").FormulaR1C1 = "=ABS(RC[-1])"
+                    Range("M14").FormulaR1C1 = "=RC[-1]/RC[-7]"
+                    Range("N14").FormulaR1C1 = "=RC[-3]^2"
+                    Range("O14").FormulaR1C1 = "=(RC[-9]-R[-1]C[-9])^2"
+                    
+                'Copy formulas down - within provided data
+                    Range("G14:O14").Copy Sheets(Tn).Range("G14", "O" & TLast)
+                
+                'Forecast values
+                    'Find last row in spread sheet (to find forecasted periods added)
+                        Range("$A$1", ActiveCell.SpecialCells(xlLastCell)).Select
+                        ForecastLast = Selection.Rows.Count
+                        
+                'Seasonality formula helpers
+                    'Seasonality index for forecast formula
+                        Range("P" & TLast + 1).Value = 1
+                        Range("P" & TLast + 2).FormulaR1C1 = "=(R[-1]C+1)"
+                        Range("P" & TLast + 2).Copy Sheets(Tn).Range("P" & ForecastLast)
+                    'Seasonality month row
+                        Range("Q" & TLast + 1).FormulaR1C1 = _
+                        "=IF((ROW()-12)<=" & TLast & ",(ROW()-12),(ROW()-12)-(12*(IF(AND((QUOTIENT(ABS(" & TLast & "-(ROW()-12)),1))=1,(IF((MOD((ABS(" & TLast & _
+                        "-(ROW()-12))),12))=0,12,(MOD((ABS(" & TLast & "-(ROW()-12))),12))))=12),1,IF((QUOTIENT(ABS(" & TLast & "-(ROW()-12)),12))=0,1,IF(AND((QUOTIENT(ABS(" & TLast & _
+                        "-(ROW()-12)),12))>0,(IF((MOD((ABS(" & TLast & "-(ROW()-12))),12))=0,12,(MOD((ABS(" & TLast & "-(ROW()-12))),12))))<>12," & _
+                        "QUOTIENT(ABS(" & TLast & "-(ROW()-12)),12))+1,((QUOTIENT(ABS(" & TLast & "-(ROW()-1)),12)))))))))"
+                    'Copy formulas down
+                        Range("Q" & TLast + 1).Copy Sheets(Tn).Range("Q" & TLast + 2)
+                        Range("P" & TLast + 2, "Q" & TLast + 2).Copy Sheets(Tn).Range("P" & TLast + 2, "Q" & ForecastLast)
+                       
+                'Copy forecast formulas down
+                    Range("J" & TLast).Copy Sheets(Tn).Range("J" & TLast, "J" & TLast + 1)
+                    Range("J" & TLast + 2).FormulaR1C1 = "=(R" & TLast & "C[-3]+(RC[6]*R" & TLast & "C[-2]))*INDEX(R1C1:R" & TLast & "C15,RC[7],9)"
+                    Range("J" & TLast + 2).Copy Sheets(Tn).Range("J" & TLast + 2, "J" & ForecastLast)
+                        
+                'Only solve for values where Ustat is not in error
+                    If IsError(Range("$U$6").Value) Then
+                'Delete error formulas - do not forecast / solve
+                    Application.DisplayAlerts = False
+                    Columns("G:X").Delete Shift:=xlToLeft
+            Else
+                'SOLVER - evolutionary algorithm to optimize values.
+                    'I REALLY don't want error messages / trial solution messages popping on this loop
+                Application.DisplayAlerts = False
+                    SolverReset
+                Application.DisplayAlerts = False
+                    SolverAdd CellRef:="$R$2", Relation:=1, FormulaText:="1"
+                    SolverAdd CellRef:="$R$2", Relation:=3, FormulaText:="0"
+                    SolverAdd CellRef:="$R$3", Relation:=1, FormulaText:="1"
+                    SolverAdd CellRef:="$R$3", Relation:=3, FormulaText:="0"
+                    SolverAdd CellRef:="$R$4", Relation:=1, FormulaText:="1"
+                    SolverAdd CellRef:="$R$4", Relation:=3, FormulaText:="0"
+                    SolverOk SetCell:="$U$6", MaxMinVal:=2, ValueOf:=0, ByChange:="$R$2:$R$4", Engine:=3, EngineDesc:="Evolutionary"
+                Application.DisplayAlerts = False
+                    SolverSolve True
+                    'SolverFinish True
+                    'SolverFinishDialog True
+                    SolverOkDialog True
+                    'SolverOptions True
+                    
+                Application.DisplayAlerts = False
+            End If
+            
+        'Copy / paste values to "Forecast"
+            'Find last active cell in forecast, offset, paste data
+                Sheets(Fn).Select
+                Range("$A$1", ActiveCell.SpecialCells(xlLastCell)).Select
+                ForecastAddRow = Selection.Rows.Count + 1
+                Range("A" & ForecastAddRow).Select
+                'MsgBox "Will add to $A$" & ForecastAddRow
+                
+            'Get range for working data
+                Sheets(Tn).Select
+    Columns("P:W").Select
+    Selection.Insert Shift:=xlToRight, CopyOrigin:=xlFormatFromLeftOrAbove
+    Range("R7").Select
+    Range("Y2:Y4").Select
+    Selection.Copy
+    Range("P1").Select
+    Selection.PasteSpecial Paste:=xlPasteAll, Operation:=xlNone, SkipBlanks:= _
+        False, Transpose:=True
+    Range("AB2:AB6").Select
+    Application.CutCopyMode = False
+    Selection.Copy
+    Range("S1").Select
+    Selection.PasteSpecial Paste:=xlPasteAll, Operation:=xlNone, SkipBlanks:= _
+        False, Transpose:=True
+    Range("P2").Select
+    Application.CutCopyMode = False
+    ActiveCell.FormulaR1C1 = "=R2C26"
+    Range("Q2").Select
+    ActiveCell.FormulaR1C1 = "=R3C26"
+    Range("R2").Select
+    ActiveCell.FormulaR1C1 = "=R4C26"
+    Range("S2").Select
+    ActiveCell.FormulaR1C1 = "=R2C771"
+    ActiveCell.FormulaR1C1 = "=R2C29"
+    Range("T2").Select
+    ActiveCell.FormulaR1C1 = "=R3C29"
+    Range("U2").Select
+    ActiveCell.FormulaR1C1 = "=R4C29"
+    Range("V2").Select
+    ActiveCell.FormulaR1C1 = "=R5C29"
+    Range("W2").Select
+    ActiveCell.FormulaR1C1 = "=R6C29"
+    Range("$P$2", "W" & ForecastTempData).Select
+    Selection.Copy
+    ActiveSheet.Paste
+                Range("$A$1", ActiveCell.SpecialCells(xlLastCell)).Select
+                ForecastTempData = Selection.Rows.Count - 1
+                Range("$A$2", "W" & ForecastTempData).Select
+                Selection.Copy
+                Sheets(Fn).Select
+                Range("A" & ForecastAddRow).PasteSpecial.Paste = xlPasteValues
+                Selection.PasteSpecial Paste:=xlPasteValues
+            
+            'DeleteSheet
+                Application.DisplayAlerts = False
+                Sheets(Tn).Delete
+                
+'Loop for each entry in dictionary.
+Next Id
+        
+    'When finished - delete sheets
+        Sheets(Sn).Select
+        Selection.AutoFilter
+       
+    'Delete from Forecast - level, trend, seasonal, error, abserr, %err, squareerr, ustat
+        Application.DisplayAlerts = False
+        Sheets(Fn).Columns("G:G").Insert Shift:=xlToRight
+        Sheets(Fn).Range("K:K").Cut Sheets(Fn).Range("G:G")
+        Sheets(Fn).Columns("K:K").Delete Shift:=xlToLeft
+    
+    Sheets(Fn).Select
+    Columns("H:O").Select
+    With Selection.Interior
+        .Pattern = xlSolid
+        .PatternColorIndex = xlAutomatic
+        .ThemeColor = xlThemeColorAccent6
+        .TintAndShade = 0.799981688894314
+        .PatternTintAndShade = 0
+    End With
+    Sheets(Fn).Range("A1").Select
+    
+'Pivot Table / Chart
+    'Add ForecastVisual sheet
+        Sheets.Add.Name = FVn
+            Sheets(FVn).Select
+            Cells.Select
+                With Selection.Font
+                    .Name = "Calibri"
+                    .Size = 10
+                End With
+                With Selection.Interior
+                    .Pattern = xlSolid
+                    .PatternColorIndex = xlAutomatic
+                    .ThemeColor = xlThemeColorDark1
+                    .TintAndShade = 0
+                    .PatternTintAndShade = 0
+                End With
+
+    'Get forecasted row count
+        Sheets(Fn).Range("$A$1", ActiveCell.SpecialCells(xlLastCell)).Select
+        ForecastedRows = Selection.Rows.Count
+
+    'Create pivot table
+        ActiveWorkbook.PivotCaches.Create(SourceType:=xlDatabase, SourceData:=Fn & "!R1C1:R" & ForecastedRows & "C7", Version:=xlPivotTableVersion14).CreatePivotTable _
+        TableDestination:=FVn & "!R1C1", TableName:=FPn, DefaultVersion:=xlPivotTableVersion14
+        Sheets(FVn).Select
+        Cells(1, 1).Select
+        
+    'Create chart
+        ActiveSheet.Shapes.AddChart.Name = FCn
+        ActiveSheet.ChartObjects(FCn).Select
+        ActiveChart.ChartType = xlLine
+        ActiveChart.SetSourceData Source:=Range("A:C")
+            With ActiveSheet.PivotTables(FPn).PivotFields("YearCode")
+                .Orientation = xlRowField
+                .Position = 1
+            End With
+            With ActiveSheet.PivotTables(FPn).PivotFields("MonthCode")
+                .Orientation = xlRowField
+                .Position = 2
+            End With
+        ActiveSheet.PivotTables(FPn).AddDataField ActiveSheet.PivotTables(FPn).PivotFields("Metric"), "Sum of Metric", xlSum
+        ActiveSheet.PivotTables(FPn).AddDataField ActiveSheet.PivotTables(FPn).PivotFields("Forecast"), "Sum of Forecast", xlSum
+        ActiveChart.ChartStyle = 7
+        ActiveSheet.Shapes(FCn).Left = Sheets(FVn).Cells(1, 7).Left
+        ActiveSheet.Shapes(FCn).Top = Sheets(FVn).Cells(1, 7).Top
+        ActiveSheet.Shapes(FCn).Height = Sheets(FVn).Range("G1:AA36").Height
+        ActiveSheet.Shapes(FCn).Width = Sheets(FVn).Range("G1:AA36").Width
+        ActiveSheet.ChartObjects(FCn).Activate
+        ActiveChart.ShowAllFieldButtons = False
+        ActiveWorkbook.ShowPivotTableFieldList = False
+        ActiveWorkbook.ShowPivotTableFieldList = True
+        ActiveWorkbook.ShowPivotTableFieldList = False
+        ActiveSheet.Shapes(FCn).Fill.Visible = msoFalse
+        ActiveSheet.Shapes(FCn).Line.Visible = msoFalse
+        ActiveChart.SetElement (msoElementLegendBottom)
+        ActiveChart.SetElement (msoElementChartTitleAboveChart)
+        ActiveChart.ChartTitle.Text = "Forecast"
+        Selection.Format.TextFrame2.TextRange.Characters.Text = "Forecast"
+        With Selection.Format.TextFrame2.TextRange.Characters(1, 8).ParagraphFormat
+            .TextDirection = msoTextDirectionLeftToRight
+            .Alignment = msoAlignCenter
+        End With
+        With Selection.Format.TextFrame2.TextRange.Characters(1, 8).Font
+            .Fill.Transparency = 0
+            .Fill.Solid
+            .Size = 18
+        End With
+    
+    'Create Slicer
+        ActiveWorkbook.SlicerCaches.Add(ActiveSheet.PivotTables(FPn), "Grouping_Id").Slicers.Add ActiveSheet, , "Grouping_Id", "Grouping_Id"
+        ActiveSheet.Shapes("Grouping_Id").Left = Sheets(FVn).Cells(1, 4).Left
+        ActiveSheet.Shapes("Grouping_Id").Top = Sheets(FVn).Cells(1, 4).Top
+        
+    'Hide pivot table
+        Range("A:C").EntireColumn.Hidden = True
+        Range("D1").Select
+      
+GoTo Quit:
+            
+Quit:
+    'Delete Dictionary
+        Application.DisplayAlerts = False
+        Sheets(Dn).Delete
+    
+    'Resume screen updating
+        Application.DisplayAlerts = True
+        Application.ScreenUpdating = True
+End Sub
